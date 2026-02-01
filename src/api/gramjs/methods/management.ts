@@ -6,6 +6,7 @@ import type {
 
 import { ACCEPTABLE_USERNAME_ERRORS } from '../../../config';
 import { buildApiExportedInvite, buildChatInviteImporter } from '../apiBuilders/chats';
+import { buildApiUser } from '../apiBuilders/users';
 import { buildInputChannel, buildInputPeer, buildInputUser } from '../gramjsBuilders';
 import { sendApiUpdate } from '../updates/apiUpdateEmitter';
 import { invokeRequest } from './client';
@@ -240,10 +241,12 @@ export async function fetchChatInviteImporters({
 
   return {
     importers: result.importers.map((importer) => buildChatInviteImporter(importer)),
+    users: result.users.map(buildApiUser).filter(Boolean),
+    count: result.count,
   };
 }
 
-export function hideChatJoinRequest({
+export async function hideChatJoinRequest({
   peer,
   user,
   isApproved,
@@ -252,13 +255,22 @@ export function hideChatJoinRequest({
   user: ApiUser;
   isApproved: boolean;
 }) {
-  return invokeRequest(new GramJs.messages.HideChatJoinRequest({
-    peer: buildInputPeer(peer.id, peer.accessHash),
-    userId: buildInputUser(user.id, user.accessHash),
-    approved: isApproved || undefined,
-  }), {
-    shouldReturnTrue: true,
-  });
+  try {
+    return await invokeRequest(new GramJs.messages.HideChatJoinRequest({
+      peer: buildInputPeer(peer.id, peer.accessHash),
+      userId: buildInputUser(user.id, user.accessHash),
+      approved: isApproved || undefined,
+    }), {
+      shouldReturnTrue: true,
+      shouldThrow: true,
+    });
+  } catch (err: any) {
+    // Ignore INPUT_USER_DEACTIVATED error (deleted accounts)
+    if (err.errorMessage === 'INPUT_USER_DEACTIVATED') {
+      return true;
+    }
+    throw err;
+  }
 }
 
 export function hideAllChatJoinRequests({
