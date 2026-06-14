@@ -1,0 +1,51 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch upstream read-only
+        run: |
+          git remote add upstream https://github.com/Ajaxy/telegram-tt.git || true
+          git fetch upstream master --tags --prune
+
+      - name: Update main from upstream
+        id: update
+        run: |
+          LOCAL=$(git rev-parse main)
+          REMOTE=$(git rev-parse upstream/master)
+          if [ "$LOCAL" = "$REMOTE" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "main already matches upstream."
+            exit 0
+          fi
+          git checkout main
+          git reset --hard upstream/master
+          git push origin main --force-with-lease
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$(git rev-parse upstream/master)" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger patch check
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run patch-check.yml \
+            --ref patchset \
+            -f upstream_ref="${{ steps.update.outputs.upstream_sha }}"

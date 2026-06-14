@@ -1,0 +1,194 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ovler <ovlertheyoung@gmail.com>
+Date: Sat, 31 Jan 2026 23:18:36 -0500
+Subject: [PATCH] feat: load all pending join request, and ban all deleted
+ account and accept anyone with gic
+
+
+diff --git a/src/api/gramjs/methods/management.ts b/src/api/gramjs/methods/management.ts
+index 59b4b5222..5ec4b492e 100644
+--- a/src/api/gramjs/methods/management.ts
++++ b/src/api/gramjs/methods/management.ts
+@@ -6,6 +6,7 @@ import type {
+ 
+ import { ACCEPTABLE_USERNAME_ERRORS } from '../../../config';
+ import { buildApiExportedInvite, buildChatInviteImporter } from '../apiBuilders/chats';
++import { buildApiUser } from '../apiBuilders/users';
+ import { buildInputChannel, buildInputPeer, buildInputUser } from '../gramjsBuilders';
+ import { sendApiUpdate } from '../updates/apiUpdateEmitter';
+ import { invokeRequest } from './client';
+@@ -240,10 +241,12 @@ export async function fetchChatInviteImporters({
+ 
+   return {
+     importers: result.importers.map((importer) => buildChatInviteImporter(importer)),
++    users: result.users.map(buildApiUser).filter(Boolean),
++    count: result.count,
+   };
+ }
+ 
+-export function hideChatJoinRequest({
++export async function hideChatJoinRequest({
+   peer,
+   user,
+   isApproved,
+@@ -252,13 +255,22 @@ export function hideChatJoinRequest({
+   user: ApiUser;
+   isApproved: boolean;
+ }) {
+-  return invokeRequest(new GramJs.messages.HideChatJoinRequest({
+-    peer: buildInputPeer(peer.id, peer.accessHash),
+-    userId: buildInputUser(user.id, user.accessHash),
+-    approved: isApproved || undefined,
+-  }), {
+-    shouldReturnTrue: true,
+-  });
++  try {
++    return await invokeRequest(new GramJs.messages.HideChatJoinRequest({
++      peer: buildInputPeer(peer.id, peer.accessHash),
++      userId: buildInputUser(user.id, user.accessHash),
++      approved: isApproved || undefined,
++    }), {
++      shouldReturnTrue: true,
++      shouldThrow: true,
++    });
++  } catch (err: any) {
++    // Ignore INPUT_USER_DEACTIVATED error (deleted accounts)
++    if (err.errorMessage === 'INPUT_USER_DEACTIVATED') {
++      return true;
++    }
++    throw err;
++  }
+ }
+ 
+ export function hideAllChatJoinRequests({
+diff --git a/src/global/actions/api/management.ts b/src/global/actions/api/management.ts
+index 91c6a86fa..7a2c34391 100644
+--- a/src/global/actions/api/management.ts
++++ b/src/global/actions/api/management.ts
+@@ -1,17 +1,19 @@
++import type { ApiChatInviteImporter } from '../../../api/types';
+ import type { ActionReturnType } from '../../types';
+ import { ManagementProgress } from '../../../types';
+ 
+ import { getCurrentTabId } from '../../../util/establishMultitabRole';
++import { buildCollectionByKey } from '../../../util/iteratees';
+ import * as langProvider from '../../../util/oldLangProvider';
+ import { callApi } from '../../../api/gramjs';
+ import { getUserFirstOrLastName } from '../../helpers';
+ import { addActionHandler, getGlobal, setGlobal } from '../../index';
+ import {
+-  updateChat, updateChatFullInfo, updateManagement, updateManagementProgress, updateUserFullInfo,
++  updateChat, updateChatFullInfo, updateManagement, updateManagementProgress, updateUserFullInfo, updateUsers,
+ } from '../../reducers';
+ import {
+   selectChat, selectCurrentMessageList, selectIsCurrentUserFrozen,
+-  selectTabState, selectUser,
++  selectTabState, selectUser, selectUserFullInfo,
+ } from '../../selectors';
+ import { ensureIsSuperGroup } from './chats';
+ 
+@@ -329,21 +331,93 @@ addActionHandler('loadChatJoinRequests', async (global, actions, payload): Promi
+   const offsetUser = offsetUserId ? selectUser(global, offsetUserId) : undefined;
+   if (!peer || (offsetUserId && !offsetUser)) return;
+ 
+-  const result = await callApi('fetchChatInviteImporters', {
+-    peer,
+-    offsetDate,
+-    offsetUser,
+-    limit,
+-    isRequested: true,
+-  });
+-  if (!result) {
+-    return;
++  let allImporters: ApiChatInviteImporter[] = [];
++  let currentOffsetDate = offsetDate;
++  let currentOffsetUser = offsetUser;
++  let totalCount = 0;
++
++  // Loop to load all join requests
++  // eslint-disable-next-line no-constant-condition
++  while (true) {
++    const result = await callApi('fetchChatInviteImporters', {
++      peer,
++      offsetDate: currentOffsetDate,
++      offsetUser: currentOffsetUser,
++      limit: 100,
++      isRequested: true,
++    });
++
++    if (!result) break;
++
++    const { importers, users, count } = result;
++    totalCount = count;
++
++    if (!importers.length) break;
++
++    allImporters = allImporters.concat(importers);
++
++    global = getGlobal();
++    global = updateUsers(global, buildCollectionByKey(users, 'id'));
++    setGlobal(global);
++
++    if (allImporters.length >= count) break;
++
++    const lastImporter = importers[importers.length - 1];
++    currentOffsetDate = lastImporter.date;
++    const lastUser = selectUser(getGlobal(), lastImporter.userId);
++    if (!lastUser) break;
++    currentOffsetUser = lastUser;
+   }
+-  const { importers } = result;
+ 
+   global = getGlobal();
+-  global = updateChat(global, chatId, { joinRequests: importers });
++  global = updateChat(global, chatId, { joinRequests: allImporters });
+   setGlobal(global);
++
++  // Auto-process deleted accounts and users with common chats
++  const usersToApprove: string[] = [];
++  const usersToDismiss: string[] = [];
++
++  // Load full user info for all importers to check common chats
++  for (const importer of allImporters) {
++    const user = selectUser(getGlobal(), importer.userId);
++    if (!user) continue;
++
++    if (user.type === 'userTypeDeleted') {
++      usersToDismiss.push(user.id);
++      continue;
++    }
++
++    // Load full user info if not already loaded
++    const userFullInfo = selectUserFullInfo(getGlobal(), user.id);
++    if (!userFullInfo) {
++      await callApi('fetchFullUser', { id: user.id });
++    }
++  }
++
++  global = getGlobal();
++
++  // Check for users with common chats
++  for (const importer of allImporters) {
++    const user = selectUser(global, importer.userId);
++    if (!user || user.type === 'userTypeDeleted') continue;
++
++    const userFullInfo = selectUserFullInfo(global, user.id);
++    if (userFullInfo?.commonChatsCount && userFullInfo.commonChatsCount > 0) {
++      usersToApprove.push(user.id);
++    }
++  }
++
++  // Auto-dismiss deleted accounts
++  for (const userId of usersToDismiss) {
++    actions.hideChatJoinRequest({ chatId, userId, isApproved: false });
++    await new Promise((resolve) => setTimeout(resolve, 100));
++  }
++
++  // Auto-approve users with common chats
++  for (const userId of usersToApprove) {
++    actions.hideChatJoinRequest({ chatId, userId, isApproved: true });
++    await new Promise((resolve) => setTimeout(resolve, 100));
++  }
+ });
+ 
+ addActionHandler('hideChatJoinRequest', async (global, actions, payload): Promise<void> => {

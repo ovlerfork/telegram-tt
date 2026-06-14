@@ -1,0 +1,112 @@
+name: Patch Check
+
+on:
+  push:
+    branches: [patchset]
+  pull_request:
+    branches: [patchset, main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream ref to test against"
+        required: false
+        default: "master"
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patchset branch
+        uses: actions/checkout@v4
+        with:
+          ref: patchset
+          path: patchset
+
+      - name: Checkout upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: Ajaxy/telegram-tt
+          ref: ${{ inputs.upstream_ref || 'master' }}
+          path: source
+          fetch-depth: 0
+
+      - name: Apply patches
+        id: apply
+        working-directory: source
+        run: |
+          git config user.name "patch-ci"
+          git config user.email "ci@localhost"
+          git config rerere.enabled true
+
+          FAILED=""
+          APPLIED=0
+          for patch in ../patchset/patches/cur/*.patch; do
+            NAME=$(basename "$patch")
+            echo "==== Applying: $NAME ===="
+            if ! git am --3way "$patch"; then
+              FAILED="$NAME"
+              break
+            fi
+            APPLIED=$((APPLIED + 1))
+          done
+
+          echo "applied=$APPLIED" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$FAILED" ]; then
+            echo "failed_patch=$FAILED" >> "$GITHUB_OUTPUT"
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            mkdir -p /tmp/patch-artifacts
+            git am --show-current-patch > /tmp/patch-artifacts/failed-patch.patch 2>/dev/null || true
+            git diff --name-only --diff-filter=U > /tmp/patch-artifacts/conflict-files.txt 2>/dev/null || true
+            git status --short > /tmp/patch-artifacts/git-status.txt
+            git am --abort || true
+          else
+            echo "status=ok" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload conflict artifacts
+        if: steps.apply.outputs.status == 'conflict'
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-conflict
+          path: /tmp/patch-artifacts/
+
+      - name: Run sanitizer
+        if: steps.apply.outputs.status == 'ok'
+        working-directory: patchset
+        run: bash scripts/check-no-upstream-refs.sh
+
+      - name: Install dependencies
+        if: steps.apply.outputs.status == 'ok'
+        id: install
+        working-directory: source
+        run: npm install
+        continue-on-error: true
+
+      - name: Run repository checks
+        if: steps.apply.outputs.status == 'ok' && steps.install.outcome == 'success'
+        id: checks
+        working-directory: source
+        run: npm run check
+        continue-on-error: true
+
+      - name: Determine result
+        id: result
+        run: |
+          if [ "${{ steps.apply.outputs.status }}" = "conflict" ]; then
+            echo "result=patch-conflict" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.install.outcome }}" = "failure" ] || [ "${{ steps.checks.outcome }}" = "failure" ]; then
+            echo "result=tests-failed" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=ready" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fail if not ready
+        if: steps.result.outputs.result != 'ready'
+        run: exit 1

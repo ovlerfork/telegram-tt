@@ -1,0 +1,94 @@
+name: Auto Release
+
+on:
+  workflow_run:
+    workflows: ["Patch Check"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream ref to build from"
+        required: false
+        default: "master"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patchset
+        uses: actions/checkout@v4
+        with:
+          ref: patchset
+          path: patchset
+
+      - name: Checkout upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: Ajaxy/telegram-tt
+          ref: ${{ inputs.upstream_ref || 'master' }}
+          path: source
+          fetch-depth: 0
+
+      - name: Apply patches
+        working-directory: source
+        run: |
+          git config user.name "patch-ci"
+          git config user.email "ci@localhost"
+          for patch in ../patchset/patches/cur/*.patch; do
+            git am --3way "$patch"
+          done
+
+      - name: Detect version
+        id: version
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ../patchset/scripts/detect-version.sh --export
+
+      - name: Update patched branch
+        working-directory: source
+        run: |
+          git remote add our-fork https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git || true
+          git push our-fork HEAD:refs/heads/patched --force
+
+      - name: Final sanitizer
+        working-directory: patchset
+        run: bash scripts/check-no-upstream-refs.sh
+
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.next_version }}
+          UPSTREAM_VERSION: ${{ steps.version.outputs.upstream_version }}
+        working-directory: source
+        run: |
+          if gh release view "$VERSION" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists."
+            exit 0
+          fi
+
+          UPSTREAM_SHA=$(git rev-parse --short HEAD~$(ls ../patchset/patches/cur/*.patch | wc -l) 2>/dev/null || echo unknown)
+          PATCHES_LIST=""
+          for p in ../patchset/patches/cur/*.patch; do
+            SUBJECT=$(grep -m1 '^Subject:' "$p" | sed 's/^Subject: \[PATCH\] //' | sed 's/^Subject: //')
+            PATCHES_LIST="${PATCHES_LIST}
+          - ${SUBJECT}"
+          done
+
+          NOTES="Base: upstream v${UPSTREAM_VERSION} (${UPSTREAM_SHA})
+
+          Patches applied:${PATCHES_LIST}"
+
+          git tag "$VERSION"
+          git push our-fork "$VERSION"
+          gh release create "$VERSION" \
+            --repo "${{ github.repository }}" \
+            --title "$VERSION" \
+            --notes "$NOTES"
