@@ -1,0 +1,87 @@
+name: Deploy Web to GitHub Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream ref to build from"
+        required: false
+        default: "master"
+  workflow_run:
+    workflows: ["Patch Check"]
+    types: [completed]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout patchset
+        uses: actions/checkout@v4
+        with:
+          ref: patchset
+          path: patchset
+
+      - name: Checkout upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: Ajaxy/telegram-tt
+          ref: ${{ inputs.upstream_ref || 'master' }}
+          path: source
+          fetch-depth: 0
+
+      - name: Apply patches
+        working-directory: source
+        run: |
+          git config user.name "patch-ci"
+          git config user.email "ci@localhost"
+          for patch in ../patchset/patches/cur/*.patch; do
+            git am --3way "$patch"
+          done
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: source/.node-version
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install dependencies
+        working-directory: source
+        run: npm install
+
+      - name: Build static web app
+        working-directory: source
+        env:
+          APP_ENV: production
+          BASE_URL: ${{ vars.BASE_URL || format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: npm run build:production
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: source/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

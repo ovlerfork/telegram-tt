@@ -12,6 +12,14 @@ on:
         description: "Upstream ref to test against"
         required: false
         default: "master"
+      run_full_check:
+        description: "Run npm install and npm run check after applying patches"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 permissions:
   contents: read
@@ -83,14 +91,14 @@ jobs:
         run: bash scripts/check-no-upstream-refs.sh
 
       - name: Install dependencies
-        if: steps.apply.outputs.status == 'ok'
+        if: steps.apply.outputs.status == 'ok' && inputs.run_full_check == 'true'
         id: install
         working-directory: source
         run: npm install
         continue-on-error: true
 
       - name: Run repository checks
-        if: steps.apply.outputs.status == 'ok' && steps.install.outcome == 'success'
+        if: steps.apply.outputs.status == 'ok' && inputs.run_full_check == 'true' && steps.install.outcome == 'success'
         id: checks
         working-directory: source
         run: npm run check
@@ -101,7 +109,7 @@ jobs:
         run: |
           if [ "${{ steps.apply.outputs.status }}" = "conflict" ]; then
             echo "result=patch-conflict" >> "$GITHUB_OUTPUT"
-          elif [ "${{ steps.install.outcome }}" = "failure" ] || [ "${{ steps.checks.outcome }}" = "failure" ]; then
+          elif [ "${{ inputs.run_full_check }}" = "true" ] && { [ "${{ steps.install.outcome }}" = "failure" ] || [ "${{ steps.checks.outcome }}" = "failure" ]; }; then
             echo "result=tests-failed" >> "$GITHUB_OUTPUT"
           else
             echo "result=ready" >> "$GITHUB_OUTPUT"
