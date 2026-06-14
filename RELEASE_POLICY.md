@@ -17,3 +17,5 @@ v12.0.18-patch.1
 ```
 
 Release notes are generated from patch metadata only. Do not include upstream issue or pull request references.
+
+Auto releases are manual-only. Trigger **Auto Release** from GitHub Actions after Patch Check is green.

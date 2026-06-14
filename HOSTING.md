@@ -15,7 +15,7 @@ Optional repository variable:
 
 - `BASE_URL` — defaults to `https://<owner>.github.io/<repo>/`.
 
-Enable Pages in repository settings with **GitHub Actions** as the source, then run **Deploy Web to GitHub Pages** manually or let it run after a successful Patch Check.
+Enable Pages in repository settings with **GitHub Actions** as the source. The workflow can be run manually and also deploys after a successful Patch Check.
 
 The workflow:
 
@@ -24,6 +24,10 @@ The workflow:
 3. applies `patches/cur`,
 4. runs `npm install` and `npm run build:production`,
 5. deploys `dist/` via GitHub Pages.
+
+## Release workflow
+
+`auto-release.yml` is intentionally manual-only. Use **Auto Release** from the Actions tab when you want to update `patched`, tag, and publish a GitHub Release. This avoids accidental releases from routine patch validation.
 
 ## Cloudflare Pages
 

@@ -1,9 +1,6 @@
 name: Auto Release
 
 on:
-  workflow_run:
-    workflows: ["Patch Check"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       upstream_ref:
@@ -15,11 +12,12 @@ permissions:
   contents: write
   packages: write
 
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
 jobs:
   release:
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout patchset
@@ -56,7 +54,7 @@ jobs:
         working-directory: source
         run: |
           git remote add our-fork https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git || true
-          git push our-fork HEAD:refs/heads/patched --force
+          git push our-fork HEAD:refs/heads/patched --force-with-lease
 
       - name: Final sanitizer
         working-directory: patchset
