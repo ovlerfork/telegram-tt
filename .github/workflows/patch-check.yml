@@ -4,7 +4,7 @@ on:
   push:
     branches: [patchset]
   pull_request:
-    branches: [patchset, main]
+    branches: [patchset, master]
     types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:

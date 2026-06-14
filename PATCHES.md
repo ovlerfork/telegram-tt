@@ -9,7 +9,7 @@ Upstream is treated as read-only. Local changes are stored as replayable patch f
 | Branch | Purpose | Writer |
 | --- | --- | --- |
 | `patchset` | Patch files, scripts, workflows, and docs. This is the default branch. | Humans |
-| `main` | Tracks upstream `master`. | CI / maintainers |
+| `master` | Tracks upstream `master`. | CI / maintainers |
 | `patched` | Generated branch: upstream plus patches applied. | CI only |
 
 ## Current patches

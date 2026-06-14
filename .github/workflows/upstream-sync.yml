@@ -16,7 +16,7 @@ jobs:
       - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: master
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -28,16 +28,16 @@ jobs:
       - name: Update main from upstream
         id: update
         run: |
-          LOCAL=$(git rev-parse main)
+          LOCAL=$(git rev-parse master)
           REMOTE=$(git rev-parse upstream/master)
           if [ "$LOCAL" = "$REMOTE" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "main already matches upstream."
+            echo "master already matches upstream."
             exit 0
           fi
-          git checkout main
+          git checkout master
           git reset --hard upstream/master
-          git push origin main --force-with-lease
+          git push origin master --force-with-lease
           echo "changed=true" >> "$GITHUB_OUTPUT"
           echo "upstream_sha=$(git rev-parse upstream/master)" >> "$GITHUB_OUTPUT"
 
